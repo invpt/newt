@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{error::Error, fmt, ops::Range};
 
 use crate::{
     lex::{Lexer, LexerError, Token, TokenKind},
@@ -12,17 +12,27 @@ pub enum ParseError {
     Lex(LexerError),
 }
 
+impl fmt::Display for ParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self, f)
+    }
+}
+
+impl Error for ParseError {}
+
 impl From<LexerError> for ParseError {
     fn from(value: LexerError) -> Self {
         ParseError::Lex(value)
     }
 }
 
+#[derive(Debug)]
 pub struct Expr<'s> {
     pub kind: ExprKind<'s>,
     pub span: Range<usize>,
 }
 
+#[derive(Debug)]
 pub enum ExprKind<'s> {
     Dict(Box<[Def<'s>]>),
     Lambda(
@@ -35,6 +45,7 @@ pub enum ExprKind<'s> {
     Name(&'s str),
 }
 
+#[derive(Debug)]
 pub struct Def<'s> {
     pub publish: bool,
     pub name: &'s str,
@@ -42,7 +53,7 @@ pub struct Def<'s> {
     pub span: Range<usize>,
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum Termination {
     Unterminated,
     Terminated,
@@ -73,7 +84,9 @@ impl<'s> Parser<'s> {
             let value = self.expr(Terminated)?;
 
             match &value.kind {
-                // put allowable constructs here.
+                // these constructs are allowed as def values.
+                ExprKind::Dict(..) | ExprKind::Lambda(..) => (),
+                // these constructs are not.
                 _ => panic!(""), // TODO: error not panic
             }
 
