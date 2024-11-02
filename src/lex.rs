@@ -27,17 +27,40 @@ pub struct Token<'s> {
 #[logos(skip r"[ \t\n\f]+")]
 pub enum TokenKind<'s> {
     #[token("pub")]
-    Fast,
+    Pub,
+    #[token("def")]
+    Def,
+    #[token("type")]
+    Type,
+    #[token("trait")]
+    Trait,
+    #[token("effect")]
+    Effect,
+    #[token("if")]
+    If,
+    #[token("else")]
+    Else,
     #[token(".")]
-    Period,
+    Dot,
+    #[token(";")]
+    Semicolon,
+    #[token("->")]
+    Arrow,
+    #[token("=>")]
+    FatArrow,
+    #[token("{")]
+    OpenCurly,
+    #[token("}")]
+    CloseCurly,
     #[regex("[a-zA-Z_][a-zA-Z_0-9]*", |lex| lex.slice())]
-    Text(&'s str),
+    Name(&'s str),
     #[regex("[0-9]+", |lex| lex.slice().parse().ok())]
     Number(u64),
 }
 
 pub struct Lexer<'s> {
     lex: logos::Lexer<'s, TokenKind<'s>>,
+    offset: usize,
     peek: Option<Token<'s>>,
 }
 
@@ -45,21 +68,30 @@ impl<'s> Lexer<'s> {
     pub fn new(src: &'s str) -> Lexer<'s> {
         Lexer {
             lex: logos::Lexer::new(src),
+            offset: 0,
             peek: None,
         }
     }
 
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
     pub fn next(&mut self) -> Result<Option<Token<'s>>> {
         if let Some(peek) = self.peek.take() {
+            self.offset = peek.span.end;
             return Ok(Some(peek));
         }
 
         match self.lex.next() {
             Some(result) => match result {
-                Ok(kind) => Ok(Some(Token {
-                    kind,
-                    span: self.lex.span(),
-                })),
+                Ok(kind) => {
+                    self.offset = self.lex.span().end;
+                    Ok(Some(Token {
+                        kind,
+                        span: self.lex.span(),
+                    }))
+                }
                 Err(()) => Err(LexerError {
                     kind: LexerErrorKind::InvalidData,
                     span: self.lex.span(),
@@ -71,7 +103,9 @@ impl<'s> Lexer<'s> {
 
     pub fn peek(&mut self) -> Result<Option<&Token<'s>>> {
         if self.peek.is_none() {
+            let old_offset = self.offset;
             self.peek = self.next()?;
+            self.offset = old_offset;
         }
 
         Ok(self.peek.as_ref())
