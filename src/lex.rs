@@ -48,6 +48,10 @@ pub enum TokenKind<'s> {
     Arrow,
     #[token("=>")]
     FatArrow,
+    #[token("(")]
+    OpenParen,
+    #[token(")")]
+    CloseParen,
     #[token("{")]
     OpenCurly,
     #[token("}")]
@@ -128,9 +132,12 @@ impl<'s> Lexer<'s> {
     }
 
     pub fn eat<T>(&mut self, pred: impl FnOnce(&Token<'s>) -> Option<T>) -> Result<Option<T>> {
-        match self.next()? {
+        match self.peek()? {
             Some(token) => match pred(&token) {
-                Some(value) => Ok(Some(value)),
+                Some(value) => {
+                    self.next()?;
+                    Ok(Some(value))
+                }
                 None => Ok(None),
             },
             None => Ok(None),

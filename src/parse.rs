@@ -73,7 +73,7 @@ impl<'s> Parser<'s> {
     fn dict(&mut self, end_pred: impl Fn(&Token<'s>) -> Option<()>) -> Result<Expr<'s>> {
         let mut defs = Vec::new();
 
-        while !self.lex.has_peek(&end_pred)? {
+        while !self.lex.has_peek(&end_pred)? && self.lex.peek()?.is_some() {
             let (start, publish) = self.lex.require(pred!(@t
                 TokenKind::Def => (t.span.start, false),
                 TokenKind::Pub => (t.span.start, true),
@@ -121,7 +121,7 @@ impl<'s> Parser<'s> {
     ) -> Result<(Box<[Expr<'s>]>, Termination)> {
         let mut exprs = Vec::new();
         let term = loop {
-            if self.lex.has_peek(&end_pred)? {
+            if self.lex.has_peek(&end_pred)? || self.lex.peek()?.is_none() {
                 break Terminated;
             }
 
@@ -279,6 +279,25 @@ impl<'s> Parser<'s> {
     }
 
     fn below(&mut self) -> Result<Expr<'s>> {
-        todo!()
+        self.atom()
+    }
+
+    fn atom(&mut self) -> Result<Expr<'s>> {
+        if let Some(start) = self
+            .lex
+            .eat(pred!(@t TokenKind::OpenParen => t.span.start))?
+        {
+            let (body, body_term) = self.seq(pred!(TokenKind::CloseParen))?;
+            let end = self
+                .lex
+                .require(pred!(@t TokenKind::CloseParen => t.span.end))?;
+
+            Ok(Expr {
+                span: start..end,
+                kind: ExprKind::Seq(body, body_term),
+            })
+        } else {
+            todo!("{:?}", self.lex.next()?)
+        }
     }
 }
