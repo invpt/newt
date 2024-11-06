@@ -1,7 +1,7 @@
 use std::{error::Error, fmt, ops::Range};
 
 use crate::{
-    lex::{Lexer, LexerError, Token, TokenKind},
+    lex::{either, Lexer, LexerError, Token, TokenKind},
     pred,
 };
 
@@ -41,8 +41,16 @@ pub enum ExprKind<'s> {
         Option<Box<Expr<'s>>>,
     ),
     If(Box<Expr<'s>>, Box<Expr<'s>>, Option<Box<Expr<'s>>>),
+    Tuple(Box<[Expr<'s>]>),
     Seq(Box<[Expr<'s>]>, Termination),
     Name(&'s str),
+    Literal(Literal),
+}
+
+#[derive(Debug)]
+pub enum Literal {
+    Integer(u64),
+    String(String),
 }
 
 #[derive(Debug)]
@@ -115,10 +123,45 @@ impl<'s> Parser<'s> {
         })
     }
 
-    fn seq(
-        &mut self,
-        end_pred: impl Fn(&Token<'s>) -> Option<()>,
-    ) -> Result<(Box<[Expr<'s>]>, Termination)> {
+    fn tuple(&mut self, end_pred: impl Fn(&Token<'s>) -> Option<()>) -> Result<Expr<'s>> {
+        let start = self.lex.offset();
+        let mut end = self.lex.offset();
+
+        if self.lex.has_peek(&end_pred)? {
+            return Ok(Expr {
+                span: start..end,
+                kind: ExprKind::Tuple(Box::new([])),
+            });
+        }
+
+        let mut exprs = Vec::new();
+        loop {
+            let expr = self.seq(either(&end_pred, pred!(TokenKind::Comma)))?;
+            end = expr.span.end;
+            if exprs.is_empty() && self.lex.has_peek(&end_pred)? {
+                return Ok(Expr {
+                    span: start..end,
+                    kind: expr.kind,
+                });
+            }
+            exprs.push(expr);
+
+            if self.lex.has_peek(&end_pred)? {
+                break;
+            }
+
+            self.lex.require(pred!(TokenKind::Comma))?;
+        }
+
+        Ok(Expr {
+            span: start..end,
+            kind: ExprKind::Tuple(exprs.into_boxed_slice()),
+        })
+    }
+
+    fn seq(&mut self, end_pred: impl Fn(&Token<'s>) -> Option<()>) -> Result<Expr<'s>> {
+        let start = self.lex.offset();
+        let mut end = self.lex.offset();
         let mut exprs = Vec::new();
         let term = loop {
             if self.lex.has_peek(&end_pred)? || self.lex.peek()?.is_none() {
@@ -126,6 +169,7 @@ impl<'s> Parser<'s> {
             }
 
             let (expr, expr_term) = self.expr_termination()?;
+            end = expr.span.end;
             exprs.push(expr);
 
             // ensure termination before next iter, or if no termination on final expr, break
@@ -138,7 +182,10 @@ impl<'s> Parser<'s> {
             }
         };
 
-        Ok((exprs.into_boxed_slice(), term))
+        Ok(Expr {
+            span: start..end,
+            kind: ExprKind::Seq(exprs.into_boxed_slice(), term),
+        })
     }
 
     fn expr(&mut self, desired_term: Termination) -> Result<Expr<'s>> {
@@ -253,7 +300,7 @@ impl<'s> Parser<'s> {
             .lex
             .eat(pred!(@t TokenKind::OpenCurly => t.span.start))?
         {
-            let (body, body_term) = self.seq(pred!(TokenKind::CloseCurly))?;
+            let body = self.seq(pred!(TokenKind::CloseCurly))?;
             let end = self
                 .lex
                 .require(pred!(@t TokenKind::CloseCurly => t.span.end))?;
@@ -261,7 +308,7 @@ impl<'s> Parser<'s> {
             Ok(Some((
                 Expr {
                     span: start..end,
-                    kind: ExprKind::Seq(body, body_term),
+                    kind: body.kind,
                 },
                 Terminated,
             )))
@@ -287,14 +334,30 @@ impl<'s> Parser<'s> {
             .lex
             .eat(pred!(@t TokenKind::OpenParen => t.span.start))?
         {
-            let (body, body_term) = self.seq(pred!(TokenKind::CloseParen))?;
+            let body = self.tuple(pred!(TokenKind::CloseParen))?;
             let end = self
                 .lex
                 .require(pred!(@t TokenKind::CloseParen => t.span.end))?;
 
             Ok(Expr {
                 span: start..end,
-                kind: ExprKind::Seq(body, body_term),
+                kind: body.kind,
+            })
+        } else if let Some((n, span)) = self
+            .lex
+            .eat(pred!(@t TokenKind::Number(n) => (n, t.span.clone())))?
+        {
+            Ok(Expr {
+                span,
+                kind: ExprKind::Literal(Literal::Integer(n)),
+            })
+        } else if let Some((name, span)) = self
+            .lex
+            .eat(pred!(@t TokenKind::Name(name) => (name, t.span.clone())))?
+        {
+            Ok(Expr {
+                span,
+                kind: ExprKind::Name(name),
             })
         } else {
             todo!("{:?}", self.lex.next()?)

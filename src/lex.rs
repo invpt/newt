@@ -42,6 +42,8 @@ pub enum TokenKind<'s> {
     Else,
     #[token(".")]
     Dot,
+    #[token(",")]
+    Comma,
     #[token(";")]
     Semicolon,
     #[token("->")]
@@ -169,3 +171,10 @@ macro_rules! pred {
 }
 
 pub use pred;
+
+pub fn either<'s, T>(
+    a: impl Fn(&Token<'s>) -> Option<T>,
+    b: impl Fn(&Token<'s>) -> Option<T>,
+) -> impl Fn(&Token<'s>) -> Option<T> {
+    move |token| a(token).or_else(|| b(token))
+}
