@@ -134,16 +134,18 @@ impl<'s> Parser<'s> {
             });
         }
 
-        let mut exprs = Vec::new();
+        let first = self.seq(either(&end_pred, pred!(TokenKind::Comma)))?;
+        if self.lex.has_peek(&end_pred)? {
+            return Ok(Expr {
+                span: start..end,
+                kind: first.kind,
+            });
+        }
+
+        let mut exprs = Vec::from([first]);
         loop {
             let expr = self.seq(either(&end_pred, pred!(TokenKind::Comma)))?;
             end = expr.span.end;
-            if exprs.is_empty() && self.lex.has_peek(&end_pred)? {
-                return Ok(Expr {
-                    span: start..end,
-                    kind: expr.kind,
-                });
-            }
             exprs.push(expr);
 
             if self.lex.has_peek(&end_pred)? {
@@ -161,10 +163,24 @@ impl<'s> Parser<'s> {
 
     fn seq(&mut self, end_pred: impl Fn(&Token<'s>) -> Option<()>) -> Result<Expr<'s>> {
         let start = self.lex.offset();
-        let mut end;
+        let mut end = self.lex.offset();
+
+        if self.lex.has_peek(&end_pred)? {
+            return Ok(Expr {
+                span: start..end,
+                kind: ExprKind::Tuple(Box::new([])),
+            });
+        }
+
         let mut exprs = Vec::new();
         let term = loop {
             let (expr, expr_term) = self.expr_termination()?;
+            if exprs.is_empty() && self.lex.has_peek(&end_pred)? {
+                return Ok(Expr {
+                    span: start..end,
+                    kind: expr.kind,
+                });
+            }
             end = expr.span.end;
             exprs.push(expr);
 
