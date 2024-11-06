@@ -205,28 +205,7 @@ impl<'s> Parser<'s> {
         } else if self.lex.eat(pred!(TokenKind::Effect))?.is_some() {
             todo!("Effect literals")
         } else if self.lex.eat(pred!(TokenKind::If))?.is_some() {
-            let cond = self.below()?;
-            let (body, body_term) = self
-                .thunk()?
-                .expect("If statements must have a body using => or {}"); // TODO: error not panic
-            let (alt, alt_term) = if self.lex.eat(pred!(TokenKind::Else))?.is_some() {
-                let (alt, alt_term) = self.expr_termination()?;
-                (Some(alt), Some(alt_term))
-            } else {
-                (None, None)
-            };
-
-            Ok((
-                Expr {
-                    span: cond.span.start
-                        ..alt
-                            .as_ref()
-                            .map(|alt| alt.span.end)
-                            .unwrap_or(body.span.end),
-                    kind: ExprKind::If(Box::new(cond), Box::new(body), alt.map(Box::new)),
-                },
-                alt_term.unwrap_or(body_term),
-            ))
+            self.conditional()
         } else {
             let output = self.output()?;
             let thunk = self.thunk()?;
@@ -291,6 +270,36 @@ impl<'s> Parser<'s> {
                 ),
             })
         }
+    }
+
+    fn conditional(&mut self) -> Result<(Expr<'s>, Termination)> {
+        let cond = self.below()?;
+        let (body, body_term) = self
+            .thunk()?
+            .expect("If statements must have a body using => or {}"); // TODO: error not panic
+        let (alt, alt_term) = if self.lex.eat(pred!(TokenKind::Else))?.is_some() {
+            let (alt, alt_term) = if self.lex.eat(pred!(TokenKind::If))?.is_some() {
+                self.conditional()?
+            } else {
+                self.thunk()?
+                    .expect("Else statements must have a body using => or {}") // TODO: error not panic
+            };
+            (Some(alt), Some(alt_term))
+        } else {
+            (None, None)
+        };
+
+        Ok((
+            Expr {
+                span: cond.span.start
+                    ..alt
+                        .as_ref()
+                        .map(|alt| alt.span.end)
+                        .unwrap_or(body.span.end),
+                kind: ExprKind::If(Box::new(cond), Box::new(body), alt.map(Box::new)),
+            },
+            alt_term.unwrap_or(body_term),
+        ))
     }
 
     fn thunk(&mut self) -> Result<Option<(Expr<'s>, Termination)>> {
