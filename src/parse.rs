@@ -161,24 +161,25 @@ impl<'s> Parser<'s> {
 
     fn seq(&mut self, end_pred: impl Fn(&Token<'s>) -> Option<()>) -> Result<Expr<'s>> {
         let start = self.lex.offset();
-        let mut end = self.lex.offset();
+        let mut end;
         let mut exprs = Vec::new();
         let term = loop {
-            if self.lex.has_peek(&end_pred)? || self.lex.peek()?.is_none() {
-                break Terminated;
-            }
-
             let (expr, expr_term) = self.expr_termination()?;
             end = expr.span.end;
             exprs.push(expr);
 
-            // ensure termination before next iter, or if no termination on final expr, break
-            if expr_term == Unterminated && self.lex.eat(pred!(TokenKind::Semicolon))?.is_none() {
-                if !self.lex.has_peek(&end_pred)? {
-                    panic!("Expected semicolon, found something else") // TODO: error, not panic
-                }
+            let explicit_term = self.lex.eat(pred!(TokenKind::Semicolon))?.is_some();
 
-                break Unterminated;
+            if self.lex.has_peek(&end_pred)? || self.lex.peek()?.is_none() {
+                if explicit_term {
+                    break Terminated;
+                } else {
+                    break Unterminated;
+                }
+            } else if expr_term == Unterminated && !explicit_term {
+                // BAD: the seq is not over, the expr is not terminated, and there was no terminating semicolon.
+                //      the user has probably forgotten a semicolon?
+                panic!("Expected semicolon, found something else") // TODO: error, not panic
             }
         };
 
