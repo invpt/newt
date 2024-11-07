@@ -43,6 +43,7 @@ pub enum ExprKind<'s> {
     If(Box<Expr<'s>>, Box<Expr<'s>>, Option<Box<Expr<'s>>>),
     Tuple(Box<[Expr<'s>]>),
     Seq(Box<[Expr<'s>]>, Termination),
+    Apply(Box<Expr<'s>>, Box<Expr<'s>>),
     Name(&'s str),
     Literal(Literal),
 }
@@ -352,10 +353,31 @@ impl<'s> Parser<'s> {
     }
 
     fn below(&mut self) -> Result<Expr<'s>> {
-        self.atom()
+        self.jux()
+    }
+
+    fn jux(&mut self) -> Result<Expr<'s>> {
+        let mut expr = self.atom()?;
+
+        while let Some(suff) = self.maybe_atom()? {
+            expr = Expr {
+                span: expr.span.start..suff.span.end,
+                kind: ExprKind::Apply(Box::new(expr), Box::new(suff)),
+            }
+        }
+
+        Ok(expr)
     }
 
     fn atom(&mut self) -> Result<Expr<'s>> {
+        if let Some(atom) = self.maybe_atom()? {
+            Ok(atom)
+        } else {
+            todo!("{:?}", self.lex.next()?)
+        }
+    }
+
+    fn maybe_atom(&mut self) -> Result<Option<Expr<'s>>> {
         if let Some(start) = self
             .lex
             .eat(pred!(@t TokenKind::OpenParen => t.span.start))?
@@ -365,28 +387,28 @@ impl<'s> Parser<'s> {
                 .lex
                 .require(pred!(@t TokenKind::CloseParen => t.span.end))?;
 
-            Ok(Expr {
+            Ok(Some(Expr {
                 span: start..end,
                 kind: body.kind,
-            })
+            }))
         } else if let Some((n, span)) = self
             .lex
             .eat(pred!(@t TokenKind::Number(n) => (n, t.span.clone())))?
         {
-            Ok(Expr {
+            Ok(Some(Expr {
                 span,
                 kind: ExprKind::Literal(Literal::Integer(n)),
-            })
+            }))
         } else if let Some((name, span)) = self
             .lex
             .eat(pred!(@t TokenKind::Name(name) => (name, t.span.clone())))?
         {
-            Ok(Expr {
+            Ok(Some(Expr {
                 span,
                 kind: ExprKind::Name(name),
-            })
+            }))
         } else {
-            todo!("{:?}", self.lex.next()?)
+            Ok(None)
         }
     }
 }
