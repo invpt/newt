@@ -43,9 +43,40 @@ pub enum ExprKind<'s> {
     If(Box<Expr<'s>>, Box<Expr<'s>>, Option<Box<Expr<'s>>>),
     Tuple(Box<[Expr<'s>]>),
     Seq(Box<[Expr<'s>]>, Termination),
+    Bin(BinOp, Box<Expr<'s>>, Box<Expr<'s>>),
     Apply(Box<Expr<'s>>, Box<Expr<'s>>),
     Name(&'s str),
     Literal(Literal),
+}
+
+#[derive(Debug)]
+pub enum BinOp {
+    Or,
+
+    And,
+
+    Eq,
+    Neq,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+
+    BitOr,
+
+    BitXor,
+
+    BitAnd,
+
+    Shl,
+    Shr,
+
+    Add,
+    Sub,
+
+    Mul,
+    Div,
+    Rem,
 }
 
 #[derive(Debug)]
@@ -353,7 +384,72 @@ impl<'s> Parser<'s> {
     }
 
     fn below(&mut self) -> Result<Expr<'s>> {
-        self.jux()
+        self.or()
+    }
+
+    fn or(&mut self) -> Result<Expr<'s>> {
+        self.left_associative(Self::and, pred!(TokenKind::Or => BinOp::Or))
+    }
+
+    fn and(&mut self) -> Result<Expr<'s>> {
+        self.left_associative(Self::comparison, pred!(TokenKind::And => BinOp::And))
+    }
+
+    fn comparison(&mut self) -> Result<Expr<'s>> {
+        self.unassociative(
+            Self::bit_or,
+            pred!(
+                TokenKind::EqEq => BinOp::Eq,
+                TokenKind::BangEq => BinOp::Neq,
+                TokenKind::Lt => BinOp::Lt,
+                TokenKind::LtEq => BinOp::Le,
+                TokenKind::Gt => BinOp::Gt,
+                TokenKind::GtEq => BinOp::Ge,
+            ),
+        )
+    }
+
+    fn bit_or(&mut self) -> Result<Expr<'s>> {
+        self.left_associative(Self::bit_xor, pred!(TokenKind::Pipe => BinOp::BitOr))
+    }
+
+    fn bit_xor(&mut self) -> Result<Expr<'s>> {
+        self.left_associative(Self::bit_and, pred!(TokenKind::Tilde => BinOp::BitXor))
+    }
+
+    fn bit_and(&mut self) -> Result<Expr<'s>> {
+        self.left_associative(Self::shift, pred!(TokenKind::Amp => BinOp::BitAnd))
+    }
+
+    fn shift(&mut self) -> Result<Expr<'s>> {
+        self.unassociative(
+            Self::arith,
+            pred!(
+                TokenKind::LtLt => BinOp::Shl,
+                TokenKind::GtGt => BinOp::Shr,
+            ),
+        )
+    }
+
+    fn arith(&mut self) -> Result<Expr<'s>> {
+        self.left_associative(
+            Self::term,
+            pred!(
+                TokenKind::Plus => BinOp::Add,
+                TokenKind::Minus => BinOp::Sub,
+            ),
+        )
+    }
+
+    fn term(&mut self) -> Result<Expr<'s>> {
+        self.left_associative(
+            Self::jux,
+            pred!(
+                TokenKind::Star => BinOp::Mul,
+                TokenKind::ForwardSlash => BinOp::Div,
+                TokenKind::Percent => BinOp::Rem,
+            ),
+        )
     }
 
     fn jux(&mut self) -> Result<Expr<'s>> {
@@ -409,6 +505,44 @@ impl<'s> Parser<'s> {
             }))
         } else {
             Ok(None)
+        }
+    }
+
+    fn left_associative(
+        &mut self,
+        below: impl Fn(&mut Self) -> Result<Expr<'s>>,
+        pred: impl Fn(&Token<'s>) -> Option<BinOp>,
+    ) -> Result<Expr<'s>> {
+        let mut lhs = below(self)?;
+
+        while let Some(op) = self.lex.eat(&pred)? {
+            let rhs = below(self)?;
+
+            lhs = Expr {
+                span: lhs.span.start..rhs.span.end,
+                kind: ExprKind::Bin(op, Box::new(lhs), Box::new(rhs)),
+            }
+        }
+
+        Ok(lhs)
+    }
+
+    fn unassociative(
+        &mut self,
+        below: impl Fn(&mut Self) -> Result<Expr<'s>>,
+        pred: impl Fn(&Token<'s>) -> Option<BinOp>,
+    ) -> Result<Expr<'s>> {
+        let lhs = below(self)?;
+
+        if let Some(op) = self.lex.eat(&pred)? {
+            let rhs = below(self)?;
+
+            Ok(Expr {
+                span: lhs.span.start..rhs.span.end,
+                kind: ExprKind::Bin(op, Box::new(lhs), Box::new(rhs)),
+            })
+        } else {
+            Ok(lhs)
         }
     }
 }

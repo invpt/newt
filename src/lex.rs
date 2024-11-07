@@ -1,4 +1,4 @@
-use std::{default, ops::Range};
+use std::ops::Range;
 
 use logos::Logos;
 
@@ -40,6 +40,42 @@ pub enum TokenKind<'s> {
     If,
     #[token("else")]
     Else,
+    #[token("or")]
+    Or,
+    #[token("and")]
+    And,
+    #[token("==")]
+    EqEq,
+    #[token("!=")]
+    BangEq,
+    #[token("<")]
+    Lt,
+    #[token("<=")]
+    LtEq,
+    #[token(">")]
+    Gt,
+    #[token(">=")]
+    GtEq,
+    #[token("|")]
+    Pipe,
+    #[token("~")]
+    Tilde,
+    #[token("&")]
+    Amp,
+    #[token("<<")]
+    LtLt,
+    #[token(">>")]
+    GtGt,
+    #[token("+")]
+    Plus,
+    #[token("-")]
+    Minus,
+    #[token("*")]
+    Star,
+    #[token("/")]
+    ForwardSlash,
+    #[token("%")]
+    Percent,
     #[token(".")]
     Dot,
     #[token(",")]

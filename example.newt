@@ -1,5 +1,5 @@
 pub main() {
-    if true { 1 } else { func(); }
+    if true { 1 } else { func(5 + 4 / 7 * 3); }
 }
 
 def func() {}
