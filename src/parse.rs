@@ -43,6 +43,8 @@ pub enum ExprKind<'s> {
     If(Box<Expr<'s>>, Box<Expr<'s>>, Option<Box<Expr<'s>>>),
     Tuple(Box<[Expr<'s>]>),
     Seq(Box<[Expr<'s>]>, Termination),
+    EqAssert(Box<Expr<'s>>, Box<Expr<'s>>),
+    Wildcard(Wildcard, &'s str, Option<Box<Expr<'s>>>),
     Bin(BinOp, Box<Expr<'s>>, Box<Expr<'s>>),
     Apply(Box<Expr<'s>>, Box<Expr<'s>>),
     Name(&'s str),
@@ -83,6 +85,12 @@ pub enum BinOp {
 pub enum Literal {
     Integer(u64),
     String(String),
+}
+
+#[derive(Debug)]
+pub enum Wildcard {
+    Val,
+    Var,
 }
 
 #[derive(Debug)]
@@ -247,6 +255,22 @@ impl<'s> Parser<'s> {
     }
 
     fn expr_termination(&mut self) -> Result<(Expr<'s>, Termination)> {
+        let (lhs, term) = self.big_termination()?;
+        if term == Terminated || self.lex.eat(pred!(TokenKind::Eq))?.is_none() {
+            Ok((lhs, term))
+        } else {
+            let (rhs, term) = self.big_termination()?;
+            Ok((
+                Expr {
+                    span: lhs.span.start..rhs.span.end,
+                    kind: ExprKind::EqAssert(Box::new(lhs), Box::new(rhs)),
+                },
+                term,
+            ))
+        }
+    }
+
+    fn big_termination(&mut self) -> Result<(Expr<'s>, Termination)> {
         if self.lex.eat(pred!(TokenKind::Type))?.is_some() {
             todo!("Type literals")
         } else if self.lex.eat(pred!(TokenKind::Trait))?.is_some() {
@@ -384,7 +408,23 @@ impl<'s> Parser<'s> {
     }
 
     fn below(&mut self) -> Result<Expr<'s>> {
-        self.or()
+        if let Some((wildcard, start)) = self.lex.eat(pred!(@t
+            TokenKind::Val => (Wildcard::Val, t.span.start),
+            TokenKind::Var => (Wildcard::Var, t.span.start),
+        ))? {
+            let (name, name_span) = self
+                .lex
+                .require(pred!(@t TokenKind::Name(name) => (name, t.span.clone())))?;
+
+            let ty = self.maybe_ty()?;
+
+            Ok(Expr {
+                span: start..ty.as_ref().map(|ty| ty.span.end).unwrap_or(name_span.end),
+                kind: ExprKind::Wildcard(wildcard, name, ty.map(Box::new)),
+            })
+        } else {
+            self.or()
+        }
     }
 
     fn or(&mut self) -> Result<Expr<'s>> {
@@ -452,8 +492,31 @@ impl<'s> Parser<'s> {
         )
     }
 
+    fn ty(&mut self) -> Result<Expr<'s>> {
+        if let Some(ty) = self.maybe_ty()? {
+            Ok(ty)
+        } else {
+            todo!("{:?}", self.lex.next()?)
+        }
+    }
+
+    fn maybe_ty(&mut self) -> Result<Option<Expr<'s>>> {
+        // TODO: this will be more complicated!
+        self.maybe_jux()
+    }
+
     fn jux(&mut self) -> Result<Expr<'s>> {
-        let mut expr = self.atom()?;
+        if let Some(jux) = self.maybe_jux()? {
+            Ok(jux)
+        } else {
+            todo!("{:?}", self.lex.next()?)
+        }
+    }
+
+    fn maybe_jux(&mut self) -> Result<Option<Expr<'s>>> {
+        let Some(mut expr) = self.maybe_atom()? else {
+            return Ok(None);
+        };
 
         while let Some(suff) = self.maybe_atom()? {
             expr = Expr {
@@ -462,15 +525,7 @@ impl<'s> Parser<'s> {
             }
         }
 
-        Ok(expr)
-    }
-
-    fn atom(&mut self) -> Result<Expr<'s>> {
-        if let Some(atom) = self.maybe_atom()? {
-            Ok(atom)
-        } else {
-            todo!("{:?}", self.lex.next()?)
-        }
+        Ok(Some(expr))
     }
 
     fn maybe_atom(&mut self) -> Result<Option<Expr<'s>>> {

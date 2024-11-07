@@ -40,6 +40,12 @@ pub enum TokenKind<'s> {
     If,
     #[token("else")]
     Else,
+    #[token("=")]
+    Eq,
+    #[token("val")]
+    Val,
+    #[token("var")]
+    Var,
     #[token("or")]
     Or,
     #[token("and")]
