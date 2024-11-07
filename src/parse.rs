@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, ops::Range};
+use std::{error::Error, fmt, num::NonZeroUsize, ops::Range};
 
 use crate::{
     lex::{either, Lexer, LexerError, Token, TokenKind},
@@ -28,8 +28,15 @@ impl From<LexerError> for ParseError {
 
 #[derive(Debug)]
 pub struct Expr<'s> {
-    pub kind: ExprKind<'s>,
     pub span: Range<usize>,
+    pub ty: Type<'s>,
+    pub kind: ExprKind<'s>,
+}
+
+#[derive(Debug)]
+pub enum Type<'s> {
+    AnyOf(&'s [Type<'s>]),
+    Any,
 }
 
 #[derive(Debug)]
@@ -43,11 +50,14 @@ pub enum ExprKind<'s> {
     If(Box<Expr<'s>>, Box<Expr<'s>>, Option<Box<Expr<'s>>>),
     Tuple(Box<[Expr<'s>]>),
     Seq(Box<[Expr<'s>]>, Termination),
+    // TODO: consider: should EqChecks also be moved outside Bin?
+    //       or should EqAssert be moved inside Bin?
+    //       or is current state of affairs okay?
     EqAssert(Box<Expr<'s>>, Box<Expr<'s>>),
-    Wildcard(Wildcard, &'s str, Option<Box<Expr<'s>>>),
+    Wildcard(Wildcard, Symbol<'s>, Option<Box<Expr<'s>>>),
     Bin(BinOp, Box<Expr<'s>>, Box<Expr<'s>>),
     Apply(Box<Expr<'s>>, Box<Expr<'s>>),
-    Name(&'s str),
+    Name(Symbol<'s>),
     Literal(Literal),
 }
 
@@ -95,11 +105,26 @@ pub enum Wildcard {
 
 #[derive(Debug)]
 pub struct Def<'s> {
+    pub span: Range<usize>,
     pub publish: bool,
     pub name: &'s str,
     pub value: Expr<'s>,
-    pub span: Range<usize>,
 }
+
+#[derive(Debug)]
+pub struct Symbol<'s> {
+    pub text: &'s str,
+    pub id: Option<SymbolId>,
+}
+
+impl<'s> Symbol<'s> {
+    pub fn unknown(text: &'s str) -> Symbol<'s> {
+        Symbol { text, id: None }
+    }
+}
+
+#[derive(Debug)]
+pub struct SymbolId(NonZeroUsize);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum Termination {
@@ -159,6 +184,7 @@ impl<'s> Parser<'s> {
 
         Ok(Expr {
             span: start..end,
+            ty: Type::Any,
             kind: ExprKind::Dict(defs.into_boxed_slice()),
         })
     }
@@ -170,6 +196,7 @@ impl<'s> Parser<'s> {
         if self.lex.has_peek(&end_pred)? {
             return Ok(Expr {
                 span: start..end,
+                ty: Type::Any,
                 kind: ExprKind::Tuple(Box::new([])),
             });
         }
@@ -178,6 +205,7 @@ impl<'s> Parser<'s> {
         if self.lex.has_peek(&end_pred)? {
             return Ok(Expr {
                 span: start..end,
+                ty: Type::Any,
                 kind: first.kind,
             });
         }
@@ -197,6 +225,7 @@ impl<'s> Parser<'s> {
 
         Ok(Expr {
             span: start..end,
+            ty: Type::Any,
             kind: ExprKind::Tuple(exprs.into_boxed_slice()),
         })
     }
@@ -208,6 +237,7 @@ impl<'s> Parser<'s> {
         if self.lex.has_peek(&end_pred)? {
             return Ok(Expr {
                 span: start..end,
+                ty: Type::Any,
                 kind: ExprKind::Tuple(Box::new([])),
             });
         }
@@ -218,6 +248,7 @@ impl<'s> Parser<'s> {
             if exprs.is_empty() && self.lex.has_peek(&end_pred)? {
                 return Ok(Expr {
                     span: start..end,
+                    ty: Type::Any,
                     kind: expr.kind,
                 });
             }
@@ -241,6 +272,7 @@ impl<'s> Parser<'s> {
 
         Ok(Expr {
             span: start..end,
+            ty: Type::Any,
             kind: ExprKind::Seq(exprs.into_boxed_slice(), term),
         })
     }
@@ -263,6 +295,7 @@ impl<'s> Parser<'s> {
             Ok((
                 Expr {
                     span: lhs.span.start..rhs.span.end,
+                    ty: Type::Any,
                     kind: ExprKind::EqAssert(Box::new(lhs), Box::new(rhs)),
                 },
                 term,
@@ -307,6 +340,7 @@ impl<'s> Parser<'s> {
                             .map(|expr| expr.span.start)
                             .unwrap_or(output.span.start)
                             ..thunk.span.end,
+                        ty: Type::Any,
                         kind: ExprKind::Lambda(
                             expr.map(Box::new),
                             Some(Box::new(output)),
@@ -322,6 +356,7 @@ impl<'s> Parser<'s> {
                             .map(|expr| expr.span.start)
                             .unwrap_or(output.span.start)
                             ..output.span.end,
+                        ty: Type::Any,
                         kind: ExprKind::Lambda(expr.map(Box::new), Some(Box::new(output)), None),
                     },
                     Unterminated,
@@ -333,6 +368,7 @@ impl<'s> Parser<'s> {
                             .map(|expr| expr.span.start)
                             .unwrap_or(thunk.span.start)
                             ..thunk.span.end,
+                        ty: Type::Any,
                         kind: ExprKind::Lambda(expr.map(Box::new), None, Some(Box::new(thunk))),
                     },
                     thunk_term,
@@ -369,6 +405,7 @@ impl<'s> Parser<'s> {
                         .as_ref()
                         .map(|alt| alt.span.end)
                         .unwrap_or(body.span.end),
+                ty: Type::Any,
                 kind: ExprKind::If(Box::new(cond), Box::new(body), alt.map(Box::new)),
             },
             alt_term.unwrap_or(body_term),
@@ -390,6 +427,7 @@ impl<'s> Parser<'s> {
             Ok(Some((
                 Expr {
                     span: start..end,
+                    ty: Type::Any,
                     kind: body.kind,
                 },
                 Terminated,
@@ -420,7 +458,8 @@ impl<'s> Parser<'s> {
 
             Ok(Expr {
                 span: start..ty.as_ref().map(|ty| ty.span.end).unwrap_or(name_span.end),
-                kind: ExprKind::Wildcard(wildcard, name, ty.map(Box::new)),
+                ty: Type::Any,
+                kind: ExprKind::Wildcard(wildcard, Symbol::unknown(name), ty.map(Box::new)),
             })
         } else {
             self.or()
@@ -521,6 +560,7 @@ impl<'s> Parser<'s> {
         while let Some(suff) = self.maybe_atom()? {
             expr = Expr {
                 span: expr.span.start..suff.span.end,
+                ty: Type::Any,
                 kind: ExprKind::Apply(Box::new(expr), Box::new(suff)),
             }
         }
@@ -540,6 +580,7 @@ impl<'s> Parser<'s> {
 
             Ok(Some(Expr {
                 span: start..end,
+                ty: Type::Any,
                 kind: body.kind,
             }))
         } else if let Some((n, span)) = self
@@ -548,6 +589,7 @@ impl<'s> Parser<'s> {
         {
             Ok(Some(Expr {
                 span,
+                ty: Type::Any,
                 kind: ExprKind::Literal(Literal::Integer(n)),
             }))
         } else if let Some((name, span)) = self
@@ -556,7 +598,8 @@ impl<'s> Parser<'s> {
         {
             Ok(Some(Expr {
                 span,
-                kind: ExprKind::Name(name),
+                ty: Type::Any,
+                kind: ExprKind::Name(Symbol::unknown(name)),
             }))
         } else {
             Ok(None)
@@ -575,6 +618,7 @@ impl<'s> Parser<'s> {
 
             lhs = Expr {
                 span: lhs.span.start..rhs.span.end,
+                ty: Type::Any,
                 kind: ExprKind::Bin(op, Box::new(lhs), Box::new(rhs)),
             }
         }
@@ -594,6 +638,7 @@ impl<'s> Parser<'s> {
 
             Ok(Expr {
                 span: lhs.span.start..rhs.span.end,
+                ty: Type::Any,
                 kind: ExprKind::Bin(op, Box::new(lhs), Box::new(rhs)),
             })
         } else {
