@@ -107,7 +107,7 @@ pub enum Wildcard {
 pub struct Def<'s> {
     pub span: Range<usize>,
     pub publish: bool,
-    pub name: &'s str,
+    pub name: Symbol<'s>,
     pub value: Expr<'s>,
 }
 
@@ -123,8 +123,8 @@ impl<'s> Symbol<'s> {
     }
 }
 
-#[derive(Debug)]
-pub struct SymbolId(NonZeroUsize);
+#[derive(Debug, Clone, Copy)]
+pub struct SymbolId(pub NonZeroUsize);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
 pub enum Termination {
@@ -165,7 +165,7 @@ impl<'s> Parser<'s> {
 
             defs.push(Def {
                 publish,
-                name,
+                name: Symbol::unknown(name),
                 span: start..value.span.end,
                 value,
             });
@@ -212,15 +212,19 @@ impl<'s> Parser<'s> {
 
         let mut exprs = Vec::from([first]);
         loop {
-            let expr = self.seq(either(&end_pred, pred!(TokenKind::Comma)))?;
-            end = expr.span.end;
-            exprs.push(expr);
-
             if self.lex.has_peek(&end_pred)? {
                 break;
             }
 
             self.lex.require(pred!(TokenKind::Comma))?;
+
+            if self.lex.has_peek(&end_pred)? {
+                break;
+            }
+
+            let expr = self.seq(either(&end_pred, pred!(TokenKind::Comma)))?;
+            end = expr.span.end;
+            exprs.push(expr);
         }
 
         Ok(Expr {
@@ -446,6 +450,32 @@ impl<'s> Parser<'s> {
     }
 
     fn below(&mut self) -> Result<Expr<'s>> {
+        self.or()
+    }
+
+    fn or(&mut self) -> Result<Expr<'s>> {
+        self.left_associative(Self::and, pred!(TokenKind::Or => BinOp::Or))
+    }
+
+    fn and(&mut self) -> Result<Expr<'s>> {
+        self.left_associative(Self::comparison, pred!(TokenKind::And => BinOp::And))
+    }
+
+    fn comparison(&mut self) -> Result<Expr<'s>> {
+        self.unassociative(
+            Self::wildcards,
+            pred!(
+                TokenKind::EqEq => BinOp::Eq,
+                TokenKind::BangEq => BinOp::Neq,
+                TokenKind::Lt => BinOp::Lt,
+                TokenKind::LtEq => BinOp::Le,
+                TokenKind::Gt => BinOp::Gt,
+                TokenKind::GtEq => BinOp::Ge,
+            ),
+        )
+    }
+
+    fn wildcards(&mut self) -> Result<Expr<'s>> {
         if let Some((wildcard, start)) = self.lex.eat(pred!(@t
             TokenKind::Val => (Wildcard::Val, t.span.start),
             TokenKind::Var => (Wildcard::Var, t.span.start),
@@ -462,30 +492,8 @@ impl<'s> Parser<'s> {
                 kind: ExprKind::Wildcard(wildcard, Symbol::unknown(name), ty.map(Box::new)),
             })
         } else {
-            self.or()
+            self.bit_or()
         }
-    }
-
-    fn or(&mut self) -> Result<Expr<'s>> {
-        self.left_associative(Self::and, pred!(TokenKind::Or => BinOp::Or))
-    }
-
-    fn and(&mut self) -> Result<Expr<'s>> {
-        self.left_associative(Self::comparison, pred!(TokenKind::And => BinOp::And))
-    }
-
-    fn comparison(&mut self) -> Result<Expr<'s>> {
-        self.unassociative(
-            Self::bit_or,
-            pred!(
-                TokenKind::EqEq => BinOp::Eq,
-                TokenKind::BangEq => BinOp::Neq,
-                TokenKind::Lt => BinOp::Lt,
-                TokenKind::LtEq => BinOp::Le,
-                TokenKind::Gt => BinOp::Gt,
-                TokenKind::GtEq => BinOp::Ge,
-            ),
-        )
     }
 
     fn bit_or(&mut self) -> Result<Expr<'s>> {

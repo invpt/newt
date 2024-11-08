@@ -1,6 +1,12 @@
 pub main() {
     val x = 1;
     if x == 1 { 1 } else { func(5 + 4 / 7 * 3); }
+    if val x == 1 and val y == 2 and (val z == 1 or val z == 2) {
+        (x, y, z)
+    }
+    if (val z == 0 and val w == 0 or val z == 0) or val z == 0 and val w == 0 {
+        z
+    }
 }
 
 def func() {}
