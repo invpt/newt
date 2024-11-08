@@ -119,15 +119,11 @@ impl<'s> Resolver<'s> {
                     self.expr(b, Some(scope));
                 }
                 (BinOp::Or, Some(outer)) => {
-                    dbg!("a", &self.bindings);
                     let delim = outer.delim();
                     self.expr(a, Some(&outer));
-                    dbg!("b", &self.bindings);
                     let matching = outer.matching(delim);
                     self.expr(b, Some(&matching));
-                    dbg!("c", &self.bindings, &matching, &outer);
                     self.pop(matching);
-                    dbg!("d", &self.bindings, &outer);
                 }
                 (_, _) => {
                     self.expr(a, None);
