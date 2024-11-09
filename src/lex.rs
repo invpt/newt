@@ -106,15 +106,17 @@ pub enum TokenKind<'s> {
     Number(u64),
 }
 
-pub struct Lexer<'s> {
+pub struct Lexer<'s, 'd> {
+    diag: Diagnostics<'d>,
     lex: logos::Lexer<'s, TokenKind<'s>>,
     offset: usize,
     peek: Option<Token<'s>>,
 }
 
-impl<'s> Lexer<'s> {
-    pub fn new(src: &'s str) -> Lexer<'s> {
+impl<'s, 'd> Lexer<'s, 'd> {
+    pub fn new(diag: Diagnostics<'d>, src: &'s str) -> Lexer<'s, 'd> {
         Lexer {
+            diag,
             lex: logos::Lexer::new(src),
             offset: 0,
             peek: None,
@@ -206,6 +208,7 @@ macro_rules! pred {
             $(let $t = token;)?
             match token.kind {
                 $($p => Some(($($e)?)),)*
+                #[allow(unreachable_patterns)]
                 _ => None,
             }
         }
@@ -213,6 +216,8 @@ macro_rules! pred {
 }
 
 pub use pred;
+
+use crate::diagnostics::Diagnostics;
 
 pub fn either<'s, T>(
     a: impl Fn(&Token<'s>) -> Option<T>,

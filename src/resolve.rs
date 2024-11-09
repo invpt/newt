@@ -1,8 +1,12 @@
 use std::{cell::Cell, num::NonZeroUsize};
 
-use crate::parse::{BinOp, Expr, ExprKind, Symbol, SymbolId, Wildcard};
+use crate::{
+    diagnostics::Diagnostics,
+    parse::{BinOp, Expr, ExprKind, Symbol, SymbolId, Wildcard},
+};
 
-pub struct Resolver<'s> {
+pub struct Resolver<'s, 'd> {
+    diag: Diagnostics<'d>,
     counter: NonZeroUsize,
     bindings: Vec<Binding<'s>>,
 }
@@ -38,9 +42,10 @@ impl Scope {
     }
 }
 
-impl<'s> Resolver<'s> {
-    pub fn resolve(expr: &mut Expr<'s>) {
+impl<'s, 'd> Resolver<'s, 'd> {
+    pub fn resolve(diag: Diagnostics<'d>, expr: &mut Expr<'s>) {
         Resolver {
+            diag,
             counter: NonZeroUsize::new(1).unwrap(),
             bindings: Vec::new(),
         }
@@ -52,7 +57,8 @@ impl<'s> Resolver<'s> {
             ExprKind::Dict(defs) => {
                 let scope = self.scope();
                 for def in defs.iter_mut() {
-                    self.bind(&mut def.name, &scope);
+                    self.bind(&mut def.name, &scope)
+                        .expect("Extra matches should be impossible here");
                 }
                 for def in defs.iter_mut() {
                     self.expr(&mut def.value, None);
@@ -100,12 +106,21 @@ impl<'s> Resolver<'s> {
             ExprKind::Wildcard(wildcard, symbol, ty) => {
                 match wildcard {
                     Wildcard::Val | Wildcard::Var => {
-                        let Some(scope) = scope else {
-                            // Don't let people try to bind when they can't!
-                            panic!("Looks like this wildcard won't do anything!")
-                            // TODO: error not panic
-                        };
-                        self.bind(symbol, scope)
+                        if let Some(scope) = scope {
+                            match self.bind(symbol, scope) {
+                                Ok(()) => {}
+                                Err(ExtraMatchError) => {
+                                    self.diag.error_with_explanation(
+                                        expr.span.clone(),
+                                        "Alternate binding cannot be repeated",
+                                        "When variables are bound on separate sides of an `or` clause, \
+                                        the alternate binding cannot be repeated.",
+                                    );
+                                }
+                            }
+                        } else {
+                            self.diag.warning_with_explanation(expr.span.clone(), "Unreachable variable", "This variable is in a place where no other code could read from it. Consider removing it?");
+                        }
                     }
                 }
 
@@ -134,8 +149,16 @@ impl<'s> Resolver<'s> {
                 self.expr(a, None);
                 self.expr(b, scope);
             }
-            ExprKind::Name(symbol) => self.find(symbol),
-            ExprKind::Literal(..) => {}
+            ExprKind::Name(symbol) => match self.find(symbol) {
+                Ok(()) => (),
+                Err(NotFound) => self.diag.error_with_explanation(
+                    expr.span.clone(),
+                    "Failed to resolve symbol",
+                    "Did you forget to declare this variable before using it?",
+                ),
+            },
+            ExprKind::Literal(..) => (),
+            ExprKind::Hole => (),
         }
     }
 
@@ -170,7 +193,7 @@ impl<'s> Resolver<'s> {
         }
     }
 
-    fn bind(&mut self, symbol: &mut Symbol<'s>, scope: &Scope) {
+    fn bind(&mut self, symbol: &mut Symbol<'s>, scope: &Scope) -> Result<(), ExtraMatchError> {
         let (id, matches) = if let Some(binding) = self.bindings
             [scope.match_start..scope.fresh_start]
             .iter_mut()
@@ -179,7 +202,7 @@ impl<'s> Resolver<'s> {
             if binding.matches == scope.match_count {
                 // We found a match... but someone else already matched it!
                 // this is tricky to support (cannot assign symbolids linearly!!) so we don't for now.
-                panic!("Extra matches aren't allowed") // TODO: error not panic
+                return Err(ExtraMatchError);
             } else {
                 binding.matches += 1;
                 (binding.id, binding.matches)
@@ -200,9 +223,11 @@ impl<'s> Resolver<'s> {
             complete: true,
         });
         scope.count.set(scope.count.get() + 1);
+
+        Ok(())
     }
 
-    fn find(&mut self, symbol: &mut Symbol) {
+    fn find(&mut self, symbol: &mut Symbol) -> Result<(), NotFound> {
         if let Some(found) = self
             .bindings
             .iter()
@@ -211,9 +236,14 @@ impl<'s> Resolver<'s> {
             .map(|b| b.id)
         {
             symbol.id = Some(found);
+            Ok(())
         } else {
-            // TODO: report error here
-            panic!("Could not locate {symbol:?}")
+            Err(NotFound)
         }
     }
 }
+
+#[derive(Debug)]
+struct ExtraMatchError;
+
+struct NotFound;

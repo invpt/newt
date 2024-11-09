@@ -1,6 +1,7 @@
 use std::{error::Error, fmt, num::NonZeroUsize, ops::Range};
 
 use crate::{
+    diagnostics::Diagnostics,
     lex::{either, Lexer, LexerError, Token, TokenKind},
     pred,
 };
@@ -59,6 +60,8 @@ pub enum ExprKind<'s> {
     Apply(Box<Expr<'s>>, Box<Expr<'s>>),
     Name(Symbol<'s>),
     Literal(Literal),
+    /// A place where invalid syntax goes.
+    Hole,
 }
 
 #[derive(Debug)]
@@ -134,13 +137,14 @@ pub enum Termination {
 
 use Termination::*;
 
-pub struct Parser<'s> {
-    lex: Lexer<'s>,
+pub struct Parser<'s, 'd> {
+    diag: Diagnostics<'d>,
+    lex: Lexer<'s, 'd>,
 }
 
-impl<'s> Parser<'s> {
-    pub fn parse(lex: Lexer<'s>) -> Result<Expr<'s>> {
-        Parser { lex }.dict(pred!())
+impl<'s, 'd> Parser<'s, 'd> {
+    pub fn parse(diag: Diagnostics<'d>, lex: Lexer<'s, 'd>) -> Result<Expr<'s>> {
+        Parser { diag, lex }.dict(pred!())
     }
 
     fn dict(&mut self, end_pred: impl Fn(&Token<'s>) -> Option<()>) -> Result<Expr<'s>> {
@@ -159,8 +163,13 @@ impl<'s> Parser<'s> {
             match &value.kind {
                 // these constructs are allowed as def values.
                 ExprKind::Dict(..) | ExprKind::Lambda(..) => (),
-                // these constructs are not.
-                _ => panic!(""), // TODO: error not panic
+                // other constructs are not.
+                _ => {
+                    self.diag.error(
+                        value.span.clone(),
+                        "Definition values must be functions or dictionaries.",
+                    );
+                }
             }
 
             defs.push(Def {
@@ -250,11 +259,7 @@ impl<'s> Parser<'s> {
         let term = loop {
             let (expr, expr_term) = self.expr_termination()?;
             if exprs.is_empty() && self.lex.has_peek(&end_pred)? {
-                return Ok(Expr {
-                    span: start..end,
-                    ty: Type::Any,
-                    kind: expr.kind,
-                });
+                return Ok(expr);
             }
             end = expr.span.end;
             exprs.push(expr);
@@ -270,7 +275,11 @@ impl<'s> Parser<'s> {
             } else if expr_term == Unterminated && !explicit_term {
                 // BAD: the seq is not over, the expr is not terminated, and there was no terminating semicolon.
                 //      the user has probably forgotten a semicolon?
-                panic!("Expected semicolon, found something else") // TODO: error, not panic
+                self.diag.error(
+                    end..end,
+                    "A semicolon is required to terminate this statement",
+                );
+                // We will continue parsing the sequence assuming a missing semicolon
             }
         };
 
@@ -378,7 +387,18 @@ impl<'s> Parser<'s> {
                     thunk_term,
                 ),
                 (None, None) => (
-                    expr.expect("Wanted expr, found nothing"), // TODO: error, not panic
+                    expr.unwrap_or_else(|| {
+                        let span = self.lex.offset()..self.lex.offset();
+                        self.diag.error(
+                            span.clone(),
+                            "Expected an expression, but found an unrecognized token",
+                        );
+                        Expr {
+                            span,
+                            ty: Type::Any,
+                            kind: ExprKind::Hole,
+                        }
+                    }),
                     Unterminated,
                 ),
             })
@@ -387,15 +407,46 @@ impl<'s> Parser<'s> {
 
     fn conditional(&mut self) -> Result<(Expr<'s>, Termination)> {
         let cond = self.below()?;
-        let (body, body_term) = self
-            .thunk()?
-            .expect("If statements must have a body using => or {}"); // TODO: error not panic
+        let (body, body_term) = if let Some(t) = self.thunk()? {
+            t
+        } else {
+            let span = self.lex.offset()..self.lex.offset();
+            self.diag.error(
+                span.clone(),
+                "If statements must have a body using => or {}",
+            );
+
+            (
+                Expr {
+                    span,
+                    ty: Type::Any,
+                    kind: ExprKind::Hole,
+                },
+                Terminated,
+            )
+        };
         let (alt, alt_term) = if self.lex.eat(pred!(TokenKind::Else))?.is_some() {
             let (alt, alt_term) = if self.lex.eat(pred!(TokenKind::If))?.is_some() {
                 self.conditional()?
             } else {
-                self.thunk()?
-                    .expect("Else statements must have a body using => or {}") // TODO: error not panic
+                if let Some(t) = self.thunk()? {
+                    t
+                } else {
+                    let span = self.lex.offset()..self.lex.offset();
+                    self.diag.error(
+                        span.clone(),
+                        "Else statements must have a body using => or {}",
+                    );
+
+                    (
+                        Expr {
+                            span,
+                            ty: Type::Any,
+                            kind: ExprKind::Hole,
+                        },
+                        Terminated,
+                    )
+                }
             };
             (Some(alt), Some(alt_term))
         } else {
@@ -419,23 +470,11 @@ impl<'s> Parser<'s> {
     fn thunk(&mut self) -> Result<Option<(Expr<'s>, Termination)>> {
         if self.lex.eat(pred!(TokenKind::FatArrow))?.is_some() {
             Ok(Some(self.expr_termination()?))
-        } else if let Some(start) = self
-            .lex
-            .eat(pred!(@t TokenKind::OpenCurly => t.span.start))?
-        {
+        } else if self.lex.eat(pred!(TokenKind::OpenCurly))?.is_some() {
             let body = self.seq(pred!(TokenKind::CloseCurly))?;
-            let end = self
-                .lex
-                .require(pred!(@t TokenKind::CloseCurly => t.span.end))?;
+            self.lex.require(pred!(TokenKind::CloseCurly))?;
 
-            Ok(Some((
-                Expr {
-                    span: start..end,
-                    ty: Type::Any,
-                    kind: body.kind,
-                },
-                Terminated,
-            )))
+            Ok(Some((body, Terminated)))
         } else {
             Ok(None)
         }
@@ -556,7 +595,9 @@ impl<'s> Parser<'s> {
         if let Some(jux) = self.maybe_jux()? {
             Ok(jux)
         } else {
-            todo!("{:?}", self.lex.next()?)
+            let unexpected = self.lex.require(pred!(@t _ => t.clone()))?;
+            self.diag.error(unexpected.span, "Unexpected token");
+            self.jux()
         }
     }
 
