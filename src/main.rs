@@ -5,11 +5,12 @@ use lex::Lexer;
 use parse::Parser;
 use resolve::Resolver;
 
+mod constrain;
 mod diagnostics;
-mod infer;
 mod lex;
 mod parse;
 mod resolve;
+mod table;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let src = fs::read_to_string("example.newt")?;
