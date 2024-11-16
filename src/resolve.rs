@@ -73,9 +73,15 @@ impl<'s, 'd> Resolver<'s, 'd> {
                 if let Some(ret) = ret {
                     self.expr(ret, None);
                 }
-                if let Some(output) = output {
-                    self.expr(output, None);
+                self.expr(output, None);
+                self.pop(scope);
+            }
+            ExprKind::FuncSig(input, ret) => {
+                let scope = self.scope();
+                if let Some(input) = input {
+                    self.expr(input, Some(&scope));
                 }
+                self.expr(ret, None);
                 self.pop(scope);
             }
             ExprKind::If(cond, then, otherwise) => {
@@ -87,7 +93,7 @@ impl<'s, 'd> Resolver<'s, 'd> {
                     self.expr(otherwise, None);
                 }
             }
-            ExprKind::Tup(exprs) => {
+            ExprKind::Tuple(exprs) => {
                 for expr in exprs.iter_mut() {
                     self.expr(expr, scope);
                 }
@@ -105,6 +111,16 @@ impl<'s, 'd> Resolver<'s, 'd> {
             }
             ExprKind::Wildcard(wildcard, symbol, ty) => {
                 match wildcard {
+                    Wildcard::Set => match self.find(symbol) {
+                        Ok(()) => {}
+                        Err(NotFound) => {
+                            self.diag.error_with_explanation(
+                                expr.span.clone(),
+                                "Failed to resolve symbol",
+                                "Did you forget to declare this variable before setting it?",
+                            );
+                        }
+                    },
                     Wildcard::Val | Wildcard::Var => {
                         if let Some(scope) = scope {
                             match self.bind(symbol, scope) {

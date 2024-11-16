@@ -49,7 +49,7 @@ impl<'d, 's> Inferrer<'d, 's> {
                     self.equate(t_then.clone(), t_otherwise.clone());
                 }
             }
-            ExprKind::Tup(exprs) => {
+            ExprKind::Tuple(exprs) => {
                 let mut tys = Vec::new();
                 for expr in exprs.iter_mut() {
                     tys.push(self.generate_constraints(expr).clone());
@@ -102,7 +102,7 @@ impl<'d, 's> Inferrer<'d, 's> {
                 let t_a = self.generate_constraints(&mut *a);
                 self.equate(
                     t_f.clone(),
-                    Ty::Func(Box::new(t_a.clone()), Box::new(expr.ty.clone())),
+                    Ty::Func(Some(Box::new(t_a.clone())), Box::new(expr.ty.clone())),
                 );
             }
             ExprKind::Name(Symbol {
@@ -161,8 +161,9 @@ impl<'d, 's> Inferrer<'d, 's> {
         let ty = match &mut expr.kind {
             ExprKind::Dict(_) => todo!(),
             ExprKind::Func(expr, expr1, expr2) => todo!(),
+            ExprKind::FuncSig(expr, expr1) => todo!(),
             ExprKind::If(expr, expr1, expr2) => todo!(),
-            ExprKind::Tup(_) => todo!(),
+            ExprKind::Tuple(_) => todo!(),
             ExprKind::Seq(_, termination) => todo!(),
             ExprKind::EqAssert(expr, expr1) => todo!(),
             ExprKind::Wildcard(wildcard, symbol, expr) => todo!(),

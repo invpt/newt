@@ -36,7 +36,7 @@ pub struct Expr<'s> {
 
 #[derive(Debug, Clone)]
 pub enum Ty {
-    Type,
+    Type(usize),
     Func(Option<Box<Ty>>, Box<Ty>),
     Tuple(Box<[Ty]>),
     Integer,
