@@ -6,6 +6,7 @@ use parse::Parser;
 use resolve::Resolver;
 
 mod diagnostics;
+mod infer;
 mod lex;
 mod parse;
 mod resolve;

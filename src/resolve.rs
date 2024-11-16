@@ -65,7 +65,7 @@ impl<'s, 'd> Resolver<'s, 'd> {
                 }
                 self.pop(scope);
             }
-            ExprKind::Lambda(input, ret, output) => {
+            ExprKind::Func(input, ret, output) => {
                 let scope = self.scope();
                 if let Some(input) = input {
                     self.expr(input, Some(&scope));
@@ -87,7 +87,7 @@ impl<'s, 'd> Resolver<'s, 'd> {
                     self.expr(otherwise, None);
                 }
             }
-            ExprKind::Tuple(exprs) => {
+            ExprKind::Tup(exprs) => {
                 for expr in exprs.iter_mut() {
                     self.expr(expr, scope);
                 }

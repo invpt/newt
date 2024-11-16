@@ -46,6 +46,8 @@ pub enum TokenKind<'s> {
     Val,
     #[token("var")]
     Var,
+    #[token("set")]
+    Set,
     #[token("or")]
     Or,
     #[token("and")]

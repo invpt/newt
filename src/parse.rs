@@ -30,24 +30,29 @@ impl From<LexerError> for ParseError {
 #[derive(Debug)]
 pub struct Expr<'s> {
     pub span: Range<usize>,
-    pub ty: Type<'s>,
+    pub ty: Ty,
     pub kind: ExprKind<'s>,
 }
 
-#[derive(Debug)]
-pub enum Type<'s> {
-    AnyOf(&'s [Type<'s>]),
-    Any,
+#[derive(Debug, Clone)]
+pub enum Ty {
+    Type,
+    Func(Option<Box<Ty>>, Box<Ty>),
+    Tuple(Box<[Ty]>),
+    Integer,
+    String,
+    Bool,
+    Unknown(UnknownTyId),
 }
+
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub struct UnknownTyId(NonZeroUsize);
 
 #[derive(Debug)]
 pub enum ExprKind<'s> {
     Dict(Box<[Def<'s>]>),
-    Lambda(
-        Option<Box<Expr<'s>>>,
-        Option<Box<Expr<'s>>>,
-        Option<Box<Expr<'s>>>,
-    ),
+    Func(Option<Box<Expr<'s>>>, Option<Box<Expr<'s>>>, Box<Expr<'s>>),
+    FuncSig(Option<Box<Expr<'s>>>, Box<Expr<'s>>),
     If(Box<Expr<'s>>, Box<Expr<'s>>, Option<Box<Expr<'s>>>),
     Tuple(Box<[Expr<'s>]>),
     Seq(Box<[Expr<'s>]>, Termination),
@@ -104,6 +109,7 @@ pub enum Literal {
 pub enum Wildcard {
     Val,
     Var,
+    Set,
 }
 
 #[derive(Debug)]
@@ -126,7 +132,7 @@ impl<'s> Symbol<'s> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SymbolId(pub NonZeroUsize);
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
@@ -140,11 +146,17 @@ use Termination::*;
 pub struct Parser<'s, 'd> {
     diag: Diagnostics<'d>,
     lex: Lexer<'s, 'd>,
+    unknown_ty_id_counter: NonZeroUsize,
 }
 
 impl<'s, 'd> Parser<'s, 'd> {
     pub fn parse(diag: Diagnostics<'d>, lex: Lexer<'s, 'd>) -> Result<Expr<'s>> {
-        Parser { diag, lex }.dict(pred!())
+        Parser {
+            diag,
+            lex,
+            unknown_ty_id_counter: NonZeroUsize::new(1).unwrap(),
+        }
+        .dict(pred!())
     }
 
     fn dict(&mut self, end_pred: impl Fn(&Token<'s>) -> Option<()>) -> Result<Expr<'s>> {
@@ -162,7 +174,7 @@ impl<'s, 'd> Parser<'s, 'd> {
 
             match &value.kind {
                 // these constructs are allowed as def values.
-                ExprKind::Dict(..) | ExprKind::Lambda(..) => (),
+                ExprKind::Dict(..) | ExprKind::Func(..) => (),
                 // other constructs are not.
                 _ => {
                     self.diag.error(
@@ -193,7 +205,7 @@ impl<'s, 'd> Parser<'s, 'd> {
 
         Ok(Expr {
             span: start..end,
-            ty: Type::Any,
+            ty: Ty::Unknown(self.unknown_ty_id()),
             kind: ExprKind::Dict(defs.into_boxed_slice()),
         })
     }
@@ -205,7 +217,7 @@ impl<'s, 'd> Parser<'s, 'd> {
         if self.lex.has_peek(&end_pred)? {
             return Ok(Expr {
                 span: start..end,
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: ExprKind::Tuple(Box::new([])),
             });
         }
@@ -214,7 +226,7 @@ impl<'s, 'd> Parser<'s, 'd> {
         if self.lex.has_peek(&end_pred)? {
             return Ok(Expr {
                 span: start..end,
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: first.kind,
             });
         }
@@ -238,7 +250,7 @@ impl<'s, 'd> Parser<'s, 'd> {
 
         Ok(Expr {
             span: start..end,
-            ty: Type::Any,
+            ty: Ty::Unknown(self.unknown_ty_id()),
             kind: ExprKind::Tuple(exprs.into_boxed_slice()),
         })
     }
@@ -250,7 +262,7 @@ impl<'s, 'd> Parser<'s, 'd> {
         if self.lex.has_peek(&end_pred)? {
             return Ok(Expr {
                 span: start..end,
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: ExprKind::Tuple(Box::new([])),
             });
         }
@@ -285,7 +297,7 @@ impl<'s, 'd> Parser<'s, 'd> {
 
         Ok(Expr {
             span: start..end,
-            ty: Type::Any,
+            ty: Ty::Unknown(self.unknown_ty_id()),
             kind: ExprKind::Seq(exprs.into_boxed_slice(), term),
         })
     }
@@ -308,7 +320,7 @@ impl<'s, 'd> Parser<'s, 'd> {
             Ok((
                 Expr {
                     span: lhs.span.start..rhs.span.end,
-                    ty: Type::Any,
+                    ty: Ty::Unknown(self.unknown_ty_id()),
                     kind: ExprKind::EqAssert(Box::new(lhs), Box::new(rhs)),
                 },
                 term,
@@ -353,11 +365,11 @@ impl<'s, 'd> Parser<'s, 'd> {
                             .map(|expr| expr.span.start)
                             .unwrap_or(output.span.start)
                             ..thunk.span.end,
-                        ty: Type::Any,
-                        kind: ExprKind::Lambda(
+                        ty: Ty::Unknown(self.unknown_ty_id()),
+                        kind: ExprKind::Func(
                             expr.map(Box::new),
                             Some(Box::new(output)),
-                            Some(Box::new(thunk)),
+                            Box::new(thunk),
                         ),
                     },
                     thunk_term,
@@ -369,8 +381,8 @@ impl<'s, 'd> Parser<'s, 'd> {
                             .map(|expr| expr.span.start)
                             .unwrap_or(output.span.start)
                             ..output.span.end,
-                        ty: Type::Any,
-                        kind: ExprKind::Lambda(expr.map(Box::new), Some(Box::new(output)), None),
+                        ty: Ty::Unknown(self.unknown_ty_id()),
+                        kind: ExprKind::FuncSig(expr.map(Box::new), Box::new(output)),
                     },
                     Unterminated,
                 ),
@@ -381,8 +393,8 @@ impl<'s, 'd> Parser<'s, 'd> {
                             .map(|expr| expr.span.start)
                             .unwrap_or(thunk.span.start)
                             ..thunk.span.end,
-                        ty: Type::Any,
-                        kind: ExprKind::Lambda(expr.map(Box::new), None, Some(Box::new(thunk))),
+                        ty: Ty::Unknown(self.unknown_ty_id()),
+                        kind: ExprKind::Func(expr.map(Box::new), None, Box::new(thunk)),
                     },
                     thunk_term,
                 ),
@@ -395,7 +407,7 @@ impl<'s, 'd> Parser<'s, 'd> {
                         );
                         Expr {
                             span,
-                            ty: Type::Any,
+                            ty: Ty::Unknown(self.unknown_ty_id()),
                             kind: ExprKind::Hole,
                         }
                     }),
@@ -419,7 +431,7 @@ impl<'s, 'd> Parser<'s, 'd> {
             (
                 Expr {
                     span,
-                    ty: Type::Any,
+                    ty: Ty::Unknown(self.unknown_ty_id()),
                     kind: ExprKind::Hole,
                 },
                 Terminated,
@@ -441,7 +453,7 @@ impl<'s, 'd> Parser<'s, 'd> {
                     (
                         Expr {
                             span,
-                            ty: Type::Any,
+                            ty: Ty::Unknown(self.unknown_ty_id()),
                             kind: ExprKind::Hole,
                         },
                         Terminated,
@@ -460,7 +472,7 @@ impl<'s, 'd> Parser<'s, 'd> {
                         .as_ref()
                         .map(|alt| alt.span.end)
                         .unwrap_or(body.span.end),
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: ExprKind::If(Box::new(cond), Box::new(body), alt.map(Box::new)),
             },
             alt_term.unwrap_or(body_term),
@@ -516,6 +528,7 @@ impl<'s, 'd> Parser<'s, 'd> {
 
     fn wildcards(&mut self) -> Result<Expr<'s>> {
         if let Some((wildcard, start)) = self.lex.eat(pred!(@t
+            TokenKind::Set => (Wildcard::Set, t.span.start),
             TokenKind::Val => (Wildcard::Val, t.span.start),
             TokenKind::Var => (Wildcard::Var, t.span.start),
         ))? {
@@ -527,7 +540,7 @@ impl<'s, 'd> Parser<'s, 'd> {
 
             Ok(Expr {
                 span: start..ty.as_ref().map(|ty| ty.span.end).unwrap_or(name_span.end),
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: ExprKind::Wildcard(wildcard, Symbol::unknown(name), ty.map(Box::new)),
             })
         } else {
@@ -609,7 +622,7 @@ impl<'s, 'd> Parser<'s, 'd> {
         while let Some(suff) = self.maybe_atom()? {
             expr = Expr {
                 span: expr.span.start..suff.span.end,
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: ExprKind::Apply(Box::new(expr), Box::new(suff)),
             }
         }
@@ -629,7 +642,7 @@ impl<'s, 'd> Parser<'s, 'd> {
 
             Ok(Some(Expr {
                 span: start..end,
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: body.kind,
             }))
         } else if let Some((n, span)) = self
@@ -638,7 +651,7 @@ impl<'s, 'd> Parser<'s, 'd> {
         {
             Ok(Some(Expr {
                 span,
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: ExprKind::Literal(Literal::Integer(n)),
             }))
         } else if let Some((name, span)) = self
@@ -647,7 +660,7 @@ impl<'s, 'd> Parser<'s, 'd> {
         {
             Ok(Some(Expr {
                 span,
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: ExprKind::Name(Symbol::unknown(name)),
             }))
         } else {
@@ -667,7 +680,7 @@ impl<'s, 'd> Parser<'s, 'd> {
 
             lhs = Expr {
                 span: lhs.span.start..rhs.span.end,
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: ExprKind::Bin(op, Box::new(lhs), Box::new(rhs)),
             }
         }
@@ -687,11 +700,17 @@ impl<'s, 'd> Parser<'s, 'd> {
 
             Ok(Expr {
                 span: lhs.span.start..rhs.span.end,
-                ty: Type::Any,
+                ty: Ty::Unknown(self.unknown_ty_id()),
                 kind: ExprKind::Bin(op, Box::new(lhs), Box::new(rhs)),
             })
         } else {
             Ok(lhs)
         }
+    }
+
+    fn unknown_ty_id(&mut self) -> UnknownTyId {
+        let id = UnknownTyId(self.unknown_ty_id_counter);
+        self.unknown_ty_id_counter = self.unknown_ty_id_counter.checked_add(1).unwrap();
+        id
     }
 }
